@@ -21,20 +21,20 @@
 
 namespace Phalcon\Builder;
 
-use Phalcon\Text;
-use Phalcon\Utils;
-use ReflectionClass;
-use Phalcon\Db\Column;
-use Phalcon\Validation;
 use Phalcon\Db\Adapter\Pdo;
-use Phalcon\Generator\Snippet;
-use Phalcon\Db\ReferenceInterface;
+use Phalcon\Db\Column;
+use Phalcon\Db\Reference;
+use Phalcon\Exception\InvalidArgumentException;
+use Phalcon\Exception\InvalidParameterException;
 use Phalcon\Exception\RuntimeException;
 use Phalcon\Exception\WriteFileException;
-use Phalcon\Exception\InvalidArgumentException;
+use Phalcon\Generator\Snippet;
 use Phalcon\Options\OptionsAware as ModelOption;
-use Phalcon\Exception\InvalidParameterException;
+use Phalcon\Text;
+use Phalcon\Utils;
+use Phalcon\Validation;
 use Phalcon\Validation\Validator\Email as EmailValidator;
+use ReflectionClass;
 
 /**
  * ModelBuilderComponent
@@ -94,13 +94,49 @@ class Model extends Component
     }
 
     /**
+     * getModelRelation
+     * @param Reference $reference
+     * @param null|string $tableName
+     * @return string
+     */
+    protected function getModelRelation(Reference $reference, $tableName = null)
+    {
+        /** @var \Phalcon\Generator\Snippet $snippet */
+        $snippet = $this->modelOptions->getOption('snippet');
+        $namespace = null;
+        if ($this->modelOptions->hasOption('namespace')) {
+            $namespace = $this->modelOptions->getOption('namespace');
+        }
+
+        $column1 = current($tableName ? $reference->getReferencedColumns() : $reference->getColumns());
+        $column2 = current($tableName ? $reference->getColumns() : $reference->getReferencedColumns());
+
+        if ($this->modelOptions->getOption('camelize')) {
+            $column1 = Utils::lowerCamelize($column1);
+            $column2 = Utils::lowerCamelize($column2);
+        }
+
+        $className = Text::camelize(Text::uncamelize($tableName ?: $reference->getReferencedTable()), '_-');
+
+        return $snippet->getRelation(
+            $tableName === null ? 'belongsTo' : 'hasMany',
+            $column1,
+            "{$namespace}\\{$className}::class",
+            $column2,
+            "['alias' => '" . Utils::lowerCamelize($className) . "']"
+        );
+    }
+
+    /**
      * Module build
      *
      * @return mixed
+     * @throws BuilderException
      */
     public function build()
     {
         $config = $this->modelOptions->getOption('config');
+        /** @var \Phalcon\Generator\Snippet $snippet */
         $snippet = $this->modelOptions->getOption('snippet');
 
         if ($this->modelOptions->hasOption('directory')) {
@@ -151,75 +187,43 @@ class Model extends Component
         /** @var Pdo $db */
         $db = new $adapterName($configArray);
 
-        $initialize = [];
+        $table = $this->modelOptions->getOption('name');
 
         if ($this->modelOptions->hasOption('schema')) {
             $schema = $this->modelOptions->getOption('schema');
         } else {
             $schema = Utils::resolveDbSchema($config->database);
         }
+        if (!$db->tableExists($table, $schema)) {
+            throw new InvalidArgumentException(sprintf('Table "%s" does not exist.', $table));
+        }
 
+
+        $initialize = [];
         if ($schema) {
             $initialize['schema'] = $snippet->getThisMethod('setSchema', $schema);
         }
         $initialize['source'] = $snippet->getThisMethod('setSource', $this->modelOptions->getOption('name'));
 
-        $table = $this->modelOptions->getOption('name');
-
-        if (!$db->tableExists($table, $schema)) {
-            throw new InvalidArgumentException(sprintf('Table "%s" does not exist.', $table));
-        }
-
-        $fields = $db->describeColumns($table, $schema);
-        $referenceList = $this->getReferenceList($schema, $db);
-
-        foreach ($referenceList as $tableName => $references) {
+        foreach ($this->getReferenceList($schema, $db, $table) as $tableName => $references) {
+            /** @var Reference $reference */
             foreach ($references as $reference) {
-                if ($reference->getReferencedTable() != $this->modelOptions->getOption('name')) {
-                    continue;
+                if ($reference->getReferencedTable() === $table) {
+                    $initialize[] = $this->getModelRelation($reference, $tableName);
                 }
-
-                $entityNamespace = '';
-                if ($this->modelOptions->getOption('namespace')) {
-                    $entityNamespace = $this->modelOptions->getOption('namespace')."\\";
-                }
-
-                $refColumns = $reference->getReferencedColumns();
-                $columns = $reference->getColumns();
-                $initialize[] = $snippet->getRelation(
-                    'hasMany',
-                    $this->modelOptions->getOption('camelize') ? Utils::lowerCamelize($refColumns[0]) : $refColumns[0],
-                    $entityNamespace . Text::camelize($tableName, '_-'),
-                    $this->modelOptions->getOption('camelize') ? Utils::lowerCamelize($columns[0]) : $columns[0],
-                    "['alias' => '" . Text::camelize($tableName, '_-') . "']"
-                );
             }
         }
-
-        foreach ($db->describeReferences($this->modelOptions->getOption('name'), $schema) as $reference) {
-            $entityNamespace = '';
-            if ($this->modelOptions->getOption('namespace')) {
-                $entityNamespace = $this->modelOptions->getOption('namespace');
-            }
-
-            $refColumns = $reference->getReferencedColumns();
-            $columns = $reference->getColumns();
-            $initialize[] = $snippet->getRelation(
-                'belongsTo',
-                $this->modelOptions->getOption('camelize') ? Utils::lowerCamelize($columns[0]) : $columns[0],
-                $this->getEntityClassName($reference, $entityNamespace),
-                $this->modelOptions->getOption('camelize') ? Utils::lowerCamelize($refColumns[0]) : $refColumns[0],
-                "['alias' => '" . Text::camelize($reference->getReferencedTable(), '_-') . "']"
-            );
+        foreach ($db->describeReferences($table, $schema) as $reference) {
+            $initialize[] = $this->getModelRelation($reference);
         }
 
-        $alreadyInitialized  = false;
-        $alreadyValidations  = false;
-        $alreadyFind         = false;
-        $alreadyFindFirst    = false;
+        $alreadyInitialized = false;
+        $alreadyValidations = false;
+        $alreadyFind = false;
+        $alreadyFindFirst = false;
         $alreadyColumnMapped = false;
-        $alreadyGetSourced   = false;
-
+        $alreadyGetSourced = false;
+        $fields = $db->describeColumns($table, $schema);
         if (file_exists($modelPath)) {
             try {
                 $possibleMethods = [];
@@ -241,7 +245,7 @@ class Model extends Component
                 $linesCode = file($modelPath);
                 $fullClassName = $this->modelOptions->getOption('className');
                 if ($this->modelOptions->getOption('namespace')) {
-                    $fullClassName = $this->modelOptions->getOption('namespace').'\\'.$fullClassName;
+                    $fullClassName = $this->modelOptions->getOption('namespace') . '\\' . $fullClassName;
                 }
                 $reflection = new ReflectionClass($fullClassName);
                 foreach ($reflection->getMethods() as $method) {
@@ -325,7 +329,7 @@ class Model extends Component
                     $validations[] = $snippet->getValidateInclusion($fieldName, $varItems);
                 }
             }
-            if ($field->getName() == 'email') {
+            if ($field->getName() === 'email') {
                 if ($this->modelOptions->getOption('camelize')) {
                     $fieldName = Utils::lowerCamelize(Utils::camelize($field->getName(), '_-'));
                 } else {
@@ -340,7 +344,7 @@ class Model extends Component
         }
 
         // Check if there has been an extender class
-        $extends = $this->modelOptions->getValidOptionOrDefault('extends', '\Phalcon\Mvc\Model');
+        $extends = $this->modelOptions->getValidOptionOrDefault('extends', \Phalcon\Mvc\Model::class);
 
         // Check if there have been any excluded fields
         $exclude = [];
@@ -411,10 +415,10 @@ class Model extends Component
             $methodRawCode[] = $snippet->getModelFindFirst($this->modelOptions->getOption('className'));
         }
 
-        $content = join('', $attributes);
+        $content = implode('', $attributes);
 
         if ($useSettersGetters) {
-            $content .= join('', $setters) . join('', $getters);
+            $content .= implode('', $setters) . implode('', $getters);
         }
 
         $content .= $validationsCode . $initCode;
@@ -428,7 +432,7 @@ class Model extends Component
         }
 
         if ($this->modelOptions->hasOption('mapColumn') && $this->modelOptions->getOption('mapColumn')
-                && false == $alreadyColumnMapped) {
+            && false == $alreadyColumnMapped) {
             $content .= $snippet->getColumnMap($fields, $this->modelOptions->getOption('camelize'));
         }
 
@@ -511,29 +515,47 @@ class Model extends Component
         }
     }
 
-    protected function getEntityClassName(ReferenceInterface $reference, $namespace)
-    {
-        $referencedTable = Utils::camelize($reference->getReferencedTable());
-        $fqcn = "{$namespace}\\{$referencedTable}";
-
-        return $fqcn;
-    }
-
     /**
      * Get reference list from option
      *
      * @param string $schema
      * @param Pdo $db
+     * @param null $table
      * @return array
      */
-    protected function getReferenceList($schema, Pdo $db)
+    protected function getReferenceList($schema, Pdo $db, $table = null)
     {
         if ($this->modelOptions->hasOption('referenceList')) {
             return $this->modelOptions->getOption('referenceList');
         }
+        $tables = [];
+        if ($db instanceof \Phalcon\Db\Adapter\Pdo\Mysql) {
+
+            $results = $db->fetchAll(
+                '
+                SELECT m.TABLE_NAME, m.REFERENCED_TABLE_NAME 
+                FROM information_schema.KEY_COLUMN_USAGE AS m 
+                WHERE m.TABLE_SCHEMA = :schema AND ( m.TABLE_NAME = :table OR m.REFERENCED_TABLE_NAME = :table)
+                ',
+                \Phalcon\Db::FETCH_ASSOC,
+                ['schema' => $schema, 'table' => $table]
+            );
+            foreach ($results as $v) {
+                if (isset($v['TABLE_NAME'])) {
+                    $tables[] = $v['TABLE_NAME'];
+                }
+                if (isset($v['REFERENCED_TABLE_NAME'])) {
+                    $tables[] = $v['REFERENCED_TABLE_NAME'];
+                }
+            }
+            $tables = array_unique($tables);
+
+        } else {
+            $tables = $db->listTables($schema);
+        }
 
         $referenceList = [];
-        foreach ($db->listTables($schema) as $name) {
+        foreach ($tables as $name) {
             $referenceList[$name] = $db->describeReferences($name, $schema);
         }
 
