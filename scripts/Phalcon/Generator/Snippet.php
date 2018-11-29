@@ -68,21 +68,6 @@ EOD;
                 $fieldName, $fieldName) . PHP_EOL;
     }
 
-    public function getValidateInclusion($fieldName, $varItems)
-    {
-        $templateValidateInclusion = <<<EOD
-        \$this->validate(
-            new InclusionIn(
-                [
-                    'field'    => '%s',
-                    'domain'   => [%s],
-                    'required' => true,
-                ]
-            )
-        );
-EOD;
-        return PHP_EOL . sprintf($templateValidateInclusion, $fieldName, $varItems) . PHP_EOL;
-    }
 
     public function getValidationsMethod(array $pieces)
     {
@@ -165,20 +150,22 @@ EOD;
         return sprintf($classDoc, $className, $namespace, date('Y-m-d, H:i:s')) . PHP_EOL;
     }
 
+    public function getValidator($fieldName, $rule)
+    {
+        return sprintf('$validator->add(\'%s\', %s);', $fieldName, $rule);
+    }
+
+    public function getValidateInclusion($fieldName, $varItems)
+    {
+        return $this->getValidator($fieldName, sprintf(
+            "new \Phalcon\Validation\Validator\InclusionIn(['domain' => [%s], 'required' => true])",
+            $varItems
+        ));
+    }
+
     public function getValidateEmail($fieldName)
     {
-        $templateValidateEmail = <<<EOD
-        \$validator->add(
-            '%s',
-            new EmailValidator(
-                [
-                    'model'   => \$this,
-                    'message' => 'Please enter a correct email address',
-                ]
-            )
-        );
-EOD;
-        return sprintf($templateValidateEmail, $fieldName) . PHP_EOL . PHP_EOL;
+        return $this->getValidator($fieldName, "new \Phalcon\Validation\Validator\Email(['model' => \$this,'message' => 'Please enter a correct email address'])");
     }
 
     public function getValidationEnd()
@@ -337,40 +324,7 @@ EOD;
             $values[] = sprintf('\'%s\' => %s', $name, $val);
         }
 
-        $syntax = '[' . implode(',', $values) . ']';
-
-        return $syntax;
-    }
-
-    /**
-     * @param \Phalcon\Db\ColumnInterface[] $fields
-     * @param bool $camelize
-     * @return string
-     */
-    public function getColumnMap($fields, $camelize = false)
-    {
-        $template = <<<EOD
-    /**
-     * Independent Column Mapping.
-     * Keys are the real names in the table and the values their names in the application
-     *
-     * @return array
-     */
-    public function columnMap()
-    {
-        return [
-            %s
-        ];
-    }
-EOD;
-
-        $contents = [];
-        foreach ($fields as $field) {
-            $name = $field->getName();
-            $contents[] = sprintf('\'%s\' => \'%s\'', $name, $camelize ? Utils::lowerCamelize($name) : $name);
-        }
-
-        return PHP_EOL . sprintf($template, implode(",\n            ", $contents)) . PHP_EOL;
+        return '[' . implode(',', $values) . ']';
     }
 
     public function getMigrationMorph($className, $table, $tableDefinition)
@@ -519,11 +473,22 @@ EOD;
         return sprintf($template, $constraintName, implode(",\n                            ", $referenceDefinition));
     }
 
+    /**
+     * getUse
+     * @param $class
+     * @return string
+     */
     public function getUse($class)
     {
         return sprintf('use %s;', $class);
     }
 
+    /**
+     * getUseAs
+     * @param $class
+     * @param $alias
+     * @return string
+     */
     public function getUseAs($class, $alias)
     {
         return sprintf('use %s as %s;', $class, $alias);
@@ -551,7 +516,7 @@ EOD;
      */
     public function getRelation($relation, $column1, $entity, $column2, $alias)
     {
-        return $this->getNewLine('$this->%s(\'%s\', %s, \'%s\', %s);', func_get_args(), 2);
+        return $this->getNewLine('$this->%s(\'%s\', %s, \'%s\', %s);', func_get_args(), 0);
     }
 
     /**
@@ -563,6 +528,6 @@ EOD;
      */
     public function getNewLine($format, array $params = [], $indent = 0)
     {
-        return str_repeat(' ', $indent * 4) . vsprintf($format, $params) . PHP_EOL;
+        return str_repeat(' ', $indent * 4) . vsprintf($format, $params);
     }
 }
